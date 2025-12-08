@@ -4,6 +4,7 @@ import os, re
 from glob import glob
 import ffmpeg
 import pyrootutils
+import pickle
 
 root = pyrootutils.setup_root(
     search_from=__file__,
@@ -26,8 +27,29 @@ from tools.vis_utils import (
 from tqdm import tqdm
 from icecream import ic
 
-INPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/input_vids"
-OUTPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/output_andrea_dev_full"
+process_local = True
+if process_local:
+    INPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/input_vids/BODY_JOINTS"
+    INPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/hi_res_input/BODY_JOINTS"
+    BASE = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/SAM3D_DEC2025/dev"
+    OUTPUT_FOLDER_SUBNAME = r"body_only_sam3_hi_res"
+
+    # OUTPUT_FOLDER_VIDS = (
+    #     r"/home/saboa/code/sam-3d-body/notebook/output_andrea_dev_bodyonly/BODY_JOINTS"
+    # )
+    # OUTPUT_FOLDER_PKL = r"/home/saboa/code/sam-3d-body/notebook/output_andrea_dev_body_only_pkl/BODY_JOINTS"
+
+    OUTPUT_FOLDER_VIDS = os.path.join(
+        BASE, "vids", OUTPUT_FOLDER_SUBNAME, "BODY_JOINTS"
+    )
+    OUTPUT_FOLDER_PKL = os.path.join(BASE, "pkl", OUTPUT_FOLDER_SUBNAME, "BODY_JOINTS")
+else:
+
+    INPUT_FOLDER = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/sorted_vids/formatted_input_downsampled_540x960/BODY_JOINTS"
+    OUTPUT_FOLDER_VIDS = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/SAM3D_DEC2025/vids/formatted_input_downsampled_540x960/BODY_JOINTS"
+    OUTPUT_FOLDER_PKL = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/SAM3D_DEC2025/pkl/formatted_input_downsampled_540x960/BODY_JOINTS"
+
+
 CHECKPOINT_PATH = (
     r"/home/saboa/code/sam-3d-body/checkpoints/sam-3d-body-dinov3/model.ckpt"
 )
@@ -35,23 +57,9 @@ MHR_PATH = (
     r"/home/saboa/code/sam-3d-body/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
 )
 TEMP_IMG_FOLDER = r"/home/saboa/code/sam-3d-body/temp_out_dev_full"
-
-
-def purge(dir, pattern):
-    for f in os.listdir(dir):
-        if re.search(pattern, f):
-            os.remove(os.path.join(dir, f))
-
-
-def split_video(video_name, temp_img_folder):
-    # purge(temp_img_folder, ".jpg")
-    os.makedirs(temp_img_folder, exist_ok=True)
-
-    path, name = os.path.split(video_name)
-    ic(path, name)
-    ffmpeg.input(video_name).filter("fps", fps=30).output(
-        f"{temp_img_folder}/%04d_Color.jpg"
-    ).run(capture_stdout=True, capture_stderr=True)
+DIGITS = 4
+DETECTOR_NAME = "sam3"
+INFERENCE_TYPE = "body"
 
 
 def remake_folder(folder):
@@ -64,6 +72,21 @@ def remake_folder(folder):
 def delete_folder(folder):
     for f in os.listdir(folder):
         os.remove(os.path.join(folder, f))
+
+
+def purge(dir, pattern):
+    for f in os.listdir(dir):
+        if re.search(pattern, f):
+            os.remove(os.path.join(dir, f))
+
+
+def split_video(video_name, temp_img_folder):
+    remake_folder(temp_img_folder)
+
+    path, name = os.path.split(video_name)
+    ffmpeg.input(video_name).filter("fps", fps=30).output(
+        f"{temp_img_folder}/%0{DIGITS}d_Color.jpg"
+    ).run(capture_stdout=True, capture_stderr=True)
 
 
 def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
@@ -97,13 +120,16 @@ def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
         OUTPUT_FOLDER_ROT = os.path.join(OUTPUT_FOLDER, f"3D_{angle}_TEMP")
         remake_folder(OUTPUT_FOLDER_ROT)
 
+    all_outputs = {}
     for image_path in tqdm(images_list):
+        frame_num = os.path.split(image_path)[-1][:DIGITS]
         outputs = estimator.process_one_image(
             image_path,
             bbox_thr=args.bbox_thresh,
             use_mask=args.use_mask,
+            inference_type=INFERENCE_TYPE,
         )
-
+        all_outputs[frame_num] = outputs
         img = cv2.imread(image_path)
 
         if len(outputs) == 0:
@@ -134,19 +160,24 @@ def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
                 f"{OUTPUT_FOLDER_ROT}/{os.path.basename(image_path)[:-4]}.jpg",
                 rend_img_3d_rot.astype(np.uint8),
             )
+    return outputs
 
 
-def make_vid_from_images(img_folder, OUTPUT_FOLDER, video_name, ext=".avi"):
+def make_vid_from_images(
+    img_folder, OUTPUT_FOLDER, INPUT_FOLDER, video_name, ext=".avi"
+):
+    full_output_vid = video_name.replace(INPUT_FOLDER, OUTPUT_FOLDER)
+    OUTPUT_FOLDER_PATH = os.path.split(full_output_vid)[0]
     video_name_no_ext = os.path.split(video_name)[-1][:-4]
     folder_prefix = os.path.split(img_folder)[-1][:-5]
 
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER_PATH, exist_ok=True)
 
     img_path = glob(os.path.join(img_folder, "*.jpg"))
     img_path = sorted(img_path)
-    ic(img_folder, img_path, folder_prefix)
-    outfile = os.path.join(OUTPUT_FOLDER, f"{video_name_no_ext}_{folder_prefix}{ext}")
-    ic(outfile)
+    outfile = os.path.join(
+        OUTPUT_FOLDER_PATH, f"{video_name_no_ext}_{folder_prefix}{ext}"
+    )
     img = cv2.imread(img_path[0])
     height, width, _ = img.shape
     fourcc = cv2.VideoWriter_fourcc(*"MJPG")
@@ -166,30 +197,40 @@ def make_vid_from_images(img_folder, OUTPUT_FOLDER, video_name, ext=".avi"):
             writer.write(img)
     writer.release()
     return outfile
-    pass
 
 
-def make_vids(OUTPUT_FOLDER, video_name):
+def make_vids(OUTPUT_FOLDER, INPUT_FOLDER, video_name):
     # look for all temp folders
     temp_folders = glob(os.path.join(OUTPUT_FOLDER, "*_TEMP"))
+
     for folder in temp_folders:
-        make_vid_from_images(folder, OUTPUT_FOLDER, video_name)
+        make_vid_from_images(folder, OUTPUT_FOLDER, INPUT_FOLDER, video_name)
         delete_folder(folder)
 
 
 def process_single_video(video_name, estimator):
-    # ic("proccessing: ", video_name)
+    ic("proccessing: ", video_name)
     split_video(video_name, TEMP_IMG_FOLDER)
     # TEMP_IMG_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/temp_out_dev_small"
 
-    process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER)
+    all_output = process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER_VIDS)
 
-    make_vids(OUTPUT_FOLDER, video_name)
+    make_vids(OUTPUT_FOLDER_VIDS, INPUT_FOLDER, video_name)
+
+    full_output_vid = video_name.replace(INPUT_FOLDER, OUTPUT_FOLDER_PKL)
+    OUTPUT_FOLDER_PATH = os.path.split(full_output_vid)[0]
+    os.makedirs(OUTPUT_FOLDER_PATH, exist_ok=True)
+    video_name_no_ext = os.path.split(video_name)[-1][:-4]
+
+    output_pkl = os.path.join(OUTPUT_FOLDER_PATH, f"{video_name_no_ext}.pkl")
+
+    with open(output_pkl, "wb") as f:
+        pickle.dump(all_output, f)
 
 
 def main(args):
 
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER_VIDS, exist_ok=True)
 
     # Use command-line args or environment variables
     detector_path = args.detector_path or os.environ.get("SAM3D_DETECTOR_PATH", "")
@@ -203,11 +244,11 @@ def main(args):
     )
 
     human_detector, human_segmentor, fov_estimator = None, None, None
-    if args.detector_name:
+    if DETECTOR_NAME:
         from tools.build_detector import HumanDetector
 
         human_detector = HumanDetector(
-            name=args.detector_name, device=device, path=detector_path
+            name=DETECTOR_NAME, device=device, path=detector_path
         )
     if len(segmentor_path):
         from tools.build_sam import HumanSegmentor
@@ -231,11 +272,16 @@ def main(args):
     vid_extensions = ["*.mp4"]
 
     videos_list = sorted(
-        [vid for ext in vid_extensions for vid in glob(os.path.join(INPUT_FOLDER, ext))]
+        [
+            vid
+            for ext in vid_extensions
+            for vid in glob(os.path.join(INPUT_FOLDER, "**", ext), recursive=True)
+        ]
     )
 
-    ic(videos_list)
-    for vid_name in videos_list:
+    for i, vid_name in enumerate(videos_list):
+        if i % 10 == 0:
+            ic(f"Processing {i} / {len(videos_list)} ")
         process_single_video(vid_name, estimator)
 
 

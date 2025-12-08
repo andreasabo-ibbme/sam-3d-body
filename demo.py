@@ -47,7 +47,9 @@ def main(args):
         human_detector = HumanDetector(
             name=args.detector_name, device=device, path=detector_path
         )
-    if len(segmentor_path):
+    if (
+        args.segmentor_name == "sam2" and len(segmentor_path)
+    ) or args.segmentor_name != "sam2":
         from tools.build_sam import HumanSegmentor
 
         human_segmentor = HumanSegmentor(
@@ -91,6 +93,15 @@ def main(args):
         )
 
         img = cv2.imread(image_path)
+
+        if len(outputs) == 0:
+            print(f"No humans detected in {os.path.basename(image_path)}, skipping...")
+            cv2.imwrite(
+                f"{output_folder}/{os.path.basename(image_path)[:-4]}.jpg",
+                img,
+            )
+            continue
+
         rend_img = visualize_sample_together(img, outputs, estimator.faces)
         cv2.imwrite(
             f"{output_folder}/{os.path.basename(image_path)[:-4]}.jpg",
