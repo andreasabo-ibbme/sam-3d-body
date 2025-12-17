@@ -59,15 +59,20 @@ INPUT_FOLDER = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/CHAH_AI/input_da
 OUTPUT_FOLDER_VIDS = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/CHAH_AI/output_data/dec_16/vids/real"
 OUTPUT_FOLDER_PKL = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/CHAH_AI/output_data/dec_16/pkl/real"
 
+INPUT_FOLDER = r"/home/asabo/scratch/sam-3d-body/notebook/images"
+OUTPUT_FOLDER_VIDS = r"/home/asabo/scratch/sam-3d-body/notebook/output/vids"
+OUTPUT_FOLDER_PKL = r"/home/asabo/scratch/sam-3d-body/notebook/output/pkl"
+
+
 POSENET_KP_LOC = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/sorted_vids/pose_tracked_downsampled_540x960/BODY_JOINTS"
 
 CHECKPOINT_PATH = (
-    r"/home/saboa/code/sam-3d-body/checkpoints/sam-3d-body-dinov3/model.ckpt"
+    r"./checkpoints/sam-3d-body-dinov3/model.ckpt"
 )
 MHR_PATH = (
-    r"/home/saboa/code/sam-3d-body/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
+    r"./checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
 )
-TEMP_IMG_FOLDER = r"/home/saboa/code/sam-3d-body/dev_chah"
+TEMP_IMG_FOLDER = r"./dev_chah"
 DIGITS = 6
 DETECTOR_NAME = "sam3"
 INFERENCE_TYPE = "body"

@@ -1,0 +1,64 @@
+# =================================== INSTALLATION =================================== 
+# Load modules
+module load cuda/12.2 python/3.11.5 opencv/4.12.0
+
+# Make virtualenv
+python -m venv env
+source ./env/bin/activate
+
+# Download python dependencies
+pip install wheel icecream
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu118
+pip install addict
+pip install pytorch-lightning pyrender opencv-python yacs scikit-image einops timm dill pandas rich hydra-core hydra-submitit-launcher hydra-colorlog pyrootutils webdataset chump networkx==3.2.1 roma joblib seaborn wandb appdirs appnope ffmpeg cython jsonlines pytest xtcocotools loguru optree fvcore black pycocotools tensorboard huggingface_hub
+pip install 'git+https://github.com/facebookresearch/detectron2.git@a1ce2f9' --no-build-isolation --no-deps
+pip install git+https://github.com/microsoft/MoGe.git
+
+git clone https://github.com/facebookresearch/sam3.git
+cd sam3
+pip install -e .
+pip install decord psutil triton
+pip uninstall ffmpeg
+pip install ffmpeg-python
+
+# Download models
+hf auth login
+hf download facebook/sam-3d-body-dinov3 --local-dir checkpoints/sam-3d-body-dinov3
+
+# Patch SAM3 model path
+# in sam3/sam3/model_builder.py: 585, 
+# OLD:
+if bpe_path is None:
+    bpe_path = pkg_resources.resource_filename(
+        "sam3", "assets/bpe_simple_vocab_16e6.txt.gz"
+    )
+
+
+# New:
+if bpe_path is None:
+    from importlib import resources
+    try:
+        # Python 3.9+
+        bpe_path = str(resources.files('sam3').joinpath('sam3/assets/bpe_simple_vocab_16e6.txt.gz'))
+    except AttributeError:
+        # Python 3.7-3.8 fallback
+        with resources.path('sam3', 'sam3/assets/bpe_simple_vocab_16e6.txt.gz') as p:
+            bpe_path = str(p)
+
+# =================================== TESTING/RUNNING =================================== 
+# Interactive job - Needed for GPU
+# https://docs.alliancecan.ca/wiki/Multi-Instance_GPU
+salloc --time=3:0:0 --mem-per-cpu=32G --ntasks=1 --account=rrg-btaati_gpu --gpus=nvidia_h100_80gb_hbm3_2g.20gb:1
+
+module load cuda/12.2 python/3.11.5 opencv/4.12.0
+source ./env/bin/activate
+
+# demo
+python demo.py \
+    --image_folder notebook/images\
+    --output_folder notebook/output \
+    --checkpoint_path ./checkpoints/sam-3d-body-dinov3/model.ckpt \
+    --mhr_path ./checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt
+
+python process_video.py
+
