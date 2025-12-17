@@ -5,6 +5,9 @@ from sam_3d_body.visualization.renderer import Renderer
 from sam_3d_body.visualization.skeleton_visualizer import SkeletonVisualizer
 from sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info
 
+from icecream import ic
+from load_json_utils import key_in_json, key_in_ref
+
 LIGHT_BLUE = (0.65098039, 0.74117647, 0.85882353)
 
 visualizer = SkeletonVisualizer(line_width=2, radius=5)
@@ -161,6 +164,8 @@ def visualize_sample_together(img_cv2, outputs, faces):
 
 def visualize_sample_2D(img_cv2, outputs, faces):
     # Render everything together
+    if len(outputs) == 0:
+        return img_cv2
     img_keypoints = img_cv2.copy()
     img_mesh = img_cv2.copy()
 
@@ -179,7 +184,44 @@ def visualize_sample_2D(img_cv2, outputs, faces):
     return img_keypoints
 
 
+def add_original_kps(keypoints_2d, pose_data):
+    pose_data_temp = pose_data[0]
+    for i, row in enumerate(pose_data_temp):
+        if row[-1] != -2:
+            keypoints_2d[i, :] = row[0:2]
+
+    return keypoints_2d
+
+
+def visualize_sample_2D_from_json(img_cv2, outputs, faces, pose_data):
+    if len(outputs) == 0:
+        return img_cv2
+    # Render everything together
+    img_keypoints = img_cv2.copy()
+    img_mesh = img_cv2.copy()
+
+    # First, sort by depth, furthest to closest
+    all_depths = np.stack([tmp["pred_cam_t"] for tmp in outputs], axis=0)[:, 2]
+    outputs_sorted = [outputs[idx] for idx in np.argsort(-all_depths)]
+    ic(len(outputs_sorted))
+    # Then, draw all keypoints.
+    for pid, person_output in enumerate(outputs_sorted):
+        keypoints_2d = person_output["pred_keypoints_2d"]
+        if pose_data is not None:
+            keypoints_2d = add_original_kps(keypoints_2d, pose_data)
+
+        keypoints_2d = np.concatenate(
+            [keypoints_2d, np.ones((keypoints_2d.shape[0], 1))], axis=-1
+        )
+
+        img_keypoints = visualizer.draw_skeleton(img_keypoints, keypoints_2d)
+
+    return img_keypoints
+
+
 def visualize_sample_3D_img(img_cv2, outputs, faces):
+    if len(outputs) == 0:
+        return img_cv2
     # Render everything together
     img_mesh = img_cv2.copy()
 
@@ -224,6 +266,9 @@ def visualize_sample_3D_img(img_cv2, outputs, faces):
 
 
 def visualize_sample_3D_white(img_cv2, outputs, faces, rot_angle):
+    if len(outputs) == 0:
+        white_img = np.ones_like(img_cv2) * 255
+        return white_img
     # Render everything together
 
     # First, sort by depth, furthest to closest

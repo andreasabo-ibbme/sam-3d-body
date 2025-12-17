@@ -119,3 +119,6 @@ debug/
 **/.dist_test
 sandbox*
 *.sh
+*.avi
+*.jpg
+*.pkl

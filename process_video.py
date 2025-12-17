@@ -4,7 +4,7 @@ import os, re
 from glob import glob
 import ffmpeg
 import pyrootutils
-import pickle
+import pickle, json
 
 root = pyrootutils.setup_root(
     search_from=__file__,
@@ -21,18 +21,21 @@ from tools.vis_utils import (
     visualize_sample,
     visualize_sample_together,
     visualize_sample_2D,
+    visualize_sample_2D_from_json,
     visualize_sample_3D_img,
     visualize_sample_3D_white,
 )
 from tqdm import tqdm
 from icecream import ic
 
+from load_json_utils import key_in_json, key_in_ref
+
 process_local = True
 if process_local:
     INPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/input_vids/BODY_JOINTS"
-    INPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/hi_res_input/BODY_JOINTS"
+    # INPUT_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/hi_res_input/BODY_JOINTS"
     BASE = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/SAM3D_DEC2025/dev"
-    OUTPUT_FOLDER_SUBNAME = r"body_only_sam3_hi_res"
+    OUTPUT_FOLDER_SUBNAME = r"body_only_sam3_540x960_prompt_dev"
 
     # OUTPUT_FOLDER_VIDS = (
     #     r"/home/saboa/code/sam-3d-body/notebook/output_andrea_dev_bodyonly/BODY_JOINTS"
@@ -50,16 +53,25 @@ else:
     OUTPUT_FOLDER_PKL = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/SAM3D_DEC2025/pkl/formatted_input_downsampled_540x960/BODY_JOINTS"
 
 
+# CHAH AI vids
+
+INPUT_FOLDER = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/CHAH_AI/input_data/real"
+OUTPUT_FOLDER_VIDS = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/CHAH_AI/output_data/dec_16/vids/real"
+OUTPUT_FOLDER_PKL = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/CHAH_AI/output_data/dec_16/pkl/real"
+
+POSENET_KP_LOC = r"/home/saboa/mnt/ndrive_andrea/AMBIENT/Andrea_S/EDS/sorted_vids/pose_tracked_downsampled_540x960/BODY_JOINTS"
+
 CHECKPOINT_PATH = (
     r"/home/saboa/code/sam-3d-body/checkpoints/sam-3d-body-dinov3/model.ckpt"
 )
 MHR_PATH = (
     r"/home/saboa/code/sam-3d-body/checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"
 )
-TEMP_IMG_FOLDER = r"/home/saboa/code/sam-3d-body/temp_out_dev_full"
-DIGITS = 4
+TEMP_IMG_FOLDER = r"/home/saboa/code/sam-3d-body/dev_chah"
+DIGITS = 6
 DETECTOR_NAME = "sam3"
 INFERENCE_TYPE = "body"
+PROMPT_KPS = False
 
 
 def remake_folder(folder):
@@ -89,7 +101,58 @@ def split_video(video_name, temp_img_folder):
     ).run(capture_stdout=True, capture_stderr=True)
 
 
-def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
+def load_json_to_tensor(file_path):
+    ref_size = 70
+    try:
+        with open(file_path, "r") as f:
+            raw = json.load(f)
+
+        # Sometimes frames are skipped, so identify the last frame
+        last_frame = 0
+        unique_frames = set()
+        duplicate_frames = set()
+        for el in raw:
+            cur_frame = int(el)
+            if cur_frame in unique_frames:
+                duplicate_frames.add(cur_frame)
+            else:
+                unique_frames.add(cur_frame)
+            last_frame = max(last_frame, cur_frame)
+
+        last_frame += 1
+
+        keypoints_prompt = torch.zeros((1, 1, 3, 1))
+        keypoints_prompt[:, :, -1, :] = -2
+        keypoints_prompt = keypoints_prompt.repeat(
+            1, ref_size, 1, last_frame
+        )  # [1, 70, 3, num_frames]
+        ic(keypoints_prompt.shape)
+        for ts in raw:
+            for kp in key_in_json:
+                # try:
+                ts_int = int(ts)
+                kp_ind_in_json = key_in_json[kp]
+                kp_ind_in_out = key_in_ref[kp]
+
+                # new_data = torch.tensor(raw[ts][0][kp_ind_in_json][0:2])
+
+                keypoints_prompt[:, kp_ind_in_out, 0:2, ts_int] = torch.tensor(
+                    raw[ts][0][kp_ind_in_json][0:2]
+                ).to(keypoints_prompt)
+
+                keypoints_prompt[0, kp_ind_in_out, 2, ts_int] = kp_ind_in_out
+                # except Exception as e:
+                # Didn't have data at this timestep
+                # ic("laoding error", e)
+                # quit()
+                # pass
+        return keypoints_prompt
+    except Exception as e:
+        ic(e)
+        return None
+
+
+def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER, posenet_data):
     image_extensions = [
         "*.jpg",
         "*.jpeg",
@@ -110,9 +173,11 @@ def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
 
     # Make all the folders we need once for the video
     OUTPUT_FOLDER_RGB = os.path.join(OUTPUT_FOLDER, "RGB_TEMP")
+    OUTPUT_FOLDER_RGB_ORIG = os.path.join(OUTPUT_FOLDER, "RGB_ORIG_TEMP")
     OUTPUT_FOLDER_3D_IMG = os.path.join(OUTPUT_FOLDER, "3D_IMG_TEMP")
 
     remake_folder(OUTPUT_FOLDER_RGB)
+    remake_folder(OUTPUT_FOLDER_RGB_ORIG)
     remake_folder(OUTPUT_FOLDER_3D_IMG)
 
     angles_to_render = [0, 90, 180, 270]
@@ -122,26 +187,41 @@ def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
 
     all_outputs = {}
     for image_path in tqdm(images_list):
-        frame_num = os.path.split(image_path)[-1][:DIGITS]
+        frame_num = int(os.path.split(image_path)[-1][:DIGITS])
+
+        cur_ts_pose = None
+        try:
+            cur_ts_pose = posenet_data[..., frame_num - 1]
+        except Exception as e:
+            pass
+
         outputs = estimator.process_one_image(
             image_path,
             bbox_thr=args.bbox_thresh,
             use_mask=args.use_mask,
             inference_type=INFERENCE_TYPE,
+            keypoints_from_2d=cur_ts_pose,
         )
         all_outputs[frame_num] = outputs
         img = cv2.imread(image_path)
 
-        if len(outputs) == 0:
-            print(f"No humans detected in {os.path.basename(image_path)}, skipping...")
-            continue
+        # if len(outputs) == 0:
+        #     print(f"No humans detected in {os.path.basename(image_path)}, skipping...")
+        #     continue
 
         # rend_img = visualize_sample_together(img, outputs, estimator.faces)
         rend_img_rgb = visualize_sample_2D(img, outputs, estimator.faces)
+        rend_img_rgb_orig = visualize_sample_2D_from_json(
+            img, outputs, estimator.faces, cur_ts_pose
+        )
 
         cv2.imwrite(
             f"{OUTPUT_FOLDER_RGB}/{os.path.basename(image_path)[:-4]}.jpg",
             rend_img_rgb.astype(np.uint8),
+        )
+        cv2.imwrite(
+            f"{OUTPUT_FOLDER_RGB_ORIG}/{os.path.basename(image_path)[:-4]}.jpg",
+            rend_img_rgb_orig.astype(np.uint8),
         )
 
         rend_img_3d_img = visualize_sample_3D_img(img, outputs, estimator.faces)
@@ -160,7 +240,8 @@ def process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER):
                 f"{OUTPUT_FOLDER_ROT}/{os.path.basename(image_path)[:-4]}.jpg",
                 rend_img_3d_rot.astype(np.uint8),
             )
-    return outputs
+
+    return all_outputs
 
 
 def make_vid_from_images(
@@ -210,10 +291,20 @@ def make_vids(OUTPUT_FOLDER, INPUT_FOLDER, video_name):
 
 def process_single_video(video_name, estimator):
     ic("proccessing: ", video_name)
+
+    if PROMPT_KPS:
+        pose_track_file = video_name.replace(INPUT_FOLDER, POSENET_KP_LOC)
+        pose_track_file = os.path.splitext(pose_track_file)[0]
+        pose_track_file = os.path.join(pose_track_file, "posenet_data.json")
+        posenet_data = load_json_to_tensor(pose_track_file)
+    else:
+        posenet_data = None
     split_video(video_name, TEMP_IMG_FOLDER)
     # TEMP_IMG_FOLDER = r"/home/saboa/code/sam-3d-body/notebook/temp_out_dev_small"
 
-    all_output = process_images(estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER_VIDS)
+    all_output = process_images(
+        estimator, TEMP_IMG_FOLDER, OUTPUT_FOLDER_VIDS, posenet_data
+    )
 
     make_vids(OUTPUT_FOLDER_VIDS, INPUT_FOLDER, video_name)
 
@@ -278,6 +369,7 @@ def main(args):
             for vid in glob(os.path.join(INPUT_FOLDER, "**", ext), recursive=True)
         ]
     )
+    ic(len(videos_list))
 
     for i, vid_name in enumerate(videos_list):
         if i % 10 == 0:
@@ -347,7 +439,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_mask",
         action="store_true",
-        default=False,
+        default=True,
         help="Use mask-conditioned prediction (segmentation mask is automatically generated from bbox)",
     )
     args = parser.parse_args()

@@ -2,7 +2,7 @@
 from typing import Optional, Union
 
 import cv2
-
+from icecream import ic
 import numpy as np
 import torch
 
@@ -72,6 +72,7 @@ class SAM3DBodyEstimator:
         nms_thr: float = 0.3,
         use_mask: bool = False,
         inference_type: str = "full",
+        keypoints_from_2d=None,
     ):
         """
         Perform model prediction in top-down format: assuming input is a full image.
@@ -94,6 +95,8 @@ class SAM3DBodyEstimator:
         self.image_embeddings = None
         self.output = None
         self.prev_prompt = []
+        self.keypoints_from_2d = keypoints_from_2d
+
         torch.cuda.empty_cache()
 
         if type(img) == str:
@@ -104,6 +107,12 @@ class SAM3DBodyEstimator:
             image_format = "rgb"
         height, width = img.shape[:2]
 
+        # Convert to range [0, 1]
+        if self.keypoints_from_2d is not None:
+            self.keypoints_from_2d = self.keypoints_from_2d / torch.tensor(
+                [width, height, 1]
+            )
+
         if bboxes is not None:
             boxes = bboxes.reshape(-1, 4)
             self.is_crop = True
@@ -111,7 +120,6 @@ class SAM3DBodyEstimator:
             if image_format == "rgb":
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 image_format = "bgr"
-            print("Running object detector...")
             boxes = self.detector.run_human_detection(
                 img,
                 det_cat_id=det_cat_id,
@@ -119,7 +127,6 @@ class SAM3DBodyEstimator:
                 nms_thr=nms_thr,
                 default_to_full_image=False,
             )
-            print("Found boxes:", boxes)
             self.is_crop = True
         else:
             boxes = np.array([0, 0, width, height]).reshape(1, 4)
@@ -167,7 +174,7 @@ class SAM3DBodyEstimator:
             cam_int = cam_int.to(batch["img"])
             batch["cam_int"] = cam_int.clone()
         elif self.fov_estimator is not None:
-            print("Running FOV estimator ...")
+            # print("Running FOV estimator ...")
             input_image = batch["img_ori"][0].data
             cam_int = self.fov_estimator.get_cam_intrinsics(input_image).to(
                 batch["img"]
@@ -182,6 +189,7 @@ class SAM3DBodyEstimator:
             inference_type=inference_type,
             transform_hand=self.transform_hand,
             thresh_wrist_angle=self.thresh_wrist_angle,
+            keypoints_from_2d=self.keypoints_from_2d,
         )
         if inference_type == "full":
             pose_output, batch_lhand, batch_rhand, _, _ = outputs

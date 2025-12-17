@@ -7,6 +7,7 @@ import roma
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from icecream import ic
 
 from sam_3d_body.data.utils.prepare_batch import prepare_batch
 from sam_3d_body.models.decoders.prompt_encoder import PositionEmbeddingRandom
@@ -42,6 +43,7 @@ KEY_RIGHT_HAND = list(range(21, 42))
 
 class SAM3DBody(BaseModel):
     pelvis_idx = [9, 10]  # left_hip, right_hip
+    keypoints_from_2d = None
 
     def _initialze_model(self):
         self.register_buffer(
@@ -110,10 +112,12 @@ class SAM3DBody(BaseModel):
         # Create prompt encoder
         self.max_num_clicks = 0
         if self.cfg.MODEL.PROMPT_ENCODER.ENABLE:
+            print("self.cfg.MODEL.PROMPT_ENCODER.ENABLED")
             self.max_num_clicks = self.cfg.MODEL.PROMPT_ENCODER.MAX_NUM_CLICKS
             self.prompt_keypoints = PROMPT_KEYPOINTS[
                 self.cfg.MODEL.PROMPT_ENCODER.PROMPT_KEYPOINTS
             ]
+            print("self.prompt_keypoints", self.prompt_keypoints)
 
             self.prompt_encoder = PromptEncoder(
                 embed_dim=self.backbone.embed_dims,  # need to match backbone dims for PE
@@ -136,6 +140,7 @@ class SAM3DBody(BaseModel):
                     else KEY_RIGHT_HAND
                 ),
             )
+
             # To keep track of prompting history
             self.prompt_hist = np.zeros(
                 (len(set(self.prompt_keypoints.values())) + 2, self.max_num_clicks),
@@ -310,7 +315,8 @@ class SAM3DBody(BaseModel):
                 the input tokens, shape (B, c)
         """
         batch_size = image_embeddings.shape[0]
-
+        # ic("inner", keypoints.shape)
+        # ic(condition_info)
         # Initial estimation for residual prediction.
         if init_estimate is None:
             init_pose = self.init_pose.weight.expand(batch_size, -1).unsqueeze(dim=1)
@@ -374,6 +380,7 @@ class SAM3DBody(BaseModel):
 
             # To start, keypoints is all [0, 0, -2]. The points get sent into self.pe_layer._pe_encoding,
             # the labels determine the embedding weight (special one for -2, -1, then each of joint.)
+
             prompt_embeddings, prompt_mask = self.prompt_encoder(
                 keypoints=keypoints
             )  # B x 1 x 1280
@@ -754,7 +761,6 @@ class SAM3DBody(BaseModel):
             pred_keypoints_2d = self._full_to_crop(batch, pred_keypoints_2d)
 
         gt_keypoints_2d = self._flatten_person(batch["keypoints_2d"]).clone()
-
         keypoint_prompt = self.keypoint_prompt_sampler.sample(
             gt_keypoints_2d,
             pred_keypoints_2d,
@@ -855,6 +861,7 @@ class SAM3DBody(BaseModel):
         all_pred_keypoints_2d = torch.zeros(
             (image_embeddings.shape[0], *kpt_shape), device=image_embeddings.device
         )
+
         if "mhr" in output and output["mhr"] is not None:
             all_pred_keypoints_2d[self.body_batch_idx] = pred_keypoints_2d
         if "mhr_hand" in output and output["mhr_hand"] is not None:
@@ -1054,6 +1061,7 @@ class SAM3DBody(BaseModel):
             batch["img"].dtype
         )  # This is B x num_person x 2 x H x W
 
+    ## KEY
     def forward_pose_branch(self, batch: Dict) -> Dict:
         """Run a forward pass for the crop-image (pose) branch."""
         batch_size, num_person = batch["img"].shape[:2]
@@ -1117,6 +1125,9 @@ class SAM3DBody(BaseModel):
         # Initial estimate with a dummy prompt
         keypoints_prompt = torch.zeros((batch_size * num_person, 1, 3)).to(batch["img"])
         keypoints_prompt[:, :, -1] = -2
+        if self.keypoints_from_2d is not None:
+            keypoints_prompt = self.keypoints_from_2d.to(batch["img"])
+            # keypoints_prompt = keypoints_prompt.repeat(1, 70, 1)
 
         # Forward promptable decoder to get updated pose tokens and regression output
         pose_output, pose_output_hand = None, None
@@ -1201,6 +1212,7 @@ class SAM3DBody(BaseModel):
         inference_type: str = "full",
         transform_hand: Any = None,
         thresh_wrist_angle=1.4,
+        keypoints_from_2d=None,
     ):
         """
         Run 3DB inference (optionally with hand detector).
@@ -1210,7 +1222,7 @@ class SAM3DBody(BaseModel):
             - body: inference with body decoder only (still full-body output)
             - hand: inference with hand decoder only (only hand output)
         """
-
+        self.keypoints_from_2d = keypoints_from_2d
         height, width = img.shape[:2]
         cam_int = batch["cam_int"].clone()
 
